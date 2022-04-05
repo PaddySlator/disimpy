@@ -139,6 +139,26 @@ def _cuda_random_step(step, rng_states, thread_id):
 
 
 @cuda.jit(device=True)
+def _cuda_add_drift(step, drift):
+    """Add drift/flow to step.
+
+    Parameters
+    ----------
+    step : numba.cuda.cudadrv.devicearray.DeviceNDArray
+    rng_states : numba.cuda.cudadrv.devicearray.DeviceNDArray
+    thread_id : int
+
+    Returns
+    -------
+    None
+    """
+    for i in range(3):
+        step[i] = step[i] + drift[i]
+    #_cuda_normalize_vector(step)
+    return
+
+
+@cuda.jit(device=True)
 def _cuda_mat_mul(R, v):
     """Multiply 1D array v of length 3 by matrix R of size 3 x 3.
 
@@ -691,7 +711,25 @@ def _cuda_step_sphere(
     if thread_id >= positions.shape[0]:
         return
     step = cuda.local.array(3, numba.float64)
-    _cuda_random_step(step, rng_states, thread_id)
+    flow = cuda.local.array(3, numba.float64)
+    drift = cuda.local.array(3, numba.float64)
+    
+    #flow in m/s (?) 
+    #replace with _cuda_get_flow
+    flow[0] = 2e-6
+    flow[1] = 2e-6
+    flow[2] = 2e-6
+    #drift will get multiplied by the step length later so need to divide here?
+    drift[0] = flow[0] / step_l
+    drift[1] = flow[1] / step_l
+    drift[2] = flow[2] / step_l
+    _cuda_random_step(step, rng_states, thread_id)          
+    _cuda_add_drift(step, drift)
+    #for i in range(3):
+    #  step[i] = step[i] + drift[i]
+   
+    
+
     r0 = positions[thread_id, :]
     iter_idx = 0
     check_intersection = True
@@ -880,10 +918,15 @@ def _cuda_step_mesh(
     normal = cuda.local.array(3, numba.float64)
     shifts = cuda.local.array(3, numba.float64)
     temp_r0 = cuda.local.array(3, numba.float64)
+    drift = cuda.local.array(3, numba.float64)
 
     # Get position and generate step
-    r0 = positions[thread_id, :]
-    _cuda_random_step(step, rng_states, thread_id)
+    r0 = positions[thread_id, :]          
+    _cuda_random_step(step, rng_states, thread_id)            
+    drift[0] = 2e-2 
+    _cuda_add_drift(step,drift)
+    print("hi")
+      
 
     # Check for intersection, reflect step, and repeat until no intersection
     check_intersection = True
@@ -1115,7 +1158,7 @@ def simulation(
         raise ValueError("Incorrect value (%s) for max_iter" % max_iter)
 
     if not quiet:
-        print("Starting simulation")
+        print("Starting simulation with flow mods!")
         if traj:
             print(
                 "The trajectories file will be up to %s GB"
@@ -1234,14 +1277,14 @@ def simulation(
                 d_iter_exc,
                 max_iter,
                 epsilon,
-            )
+            )            
             stream.synchronize()
             if traj:
                 positions = d_positions.copy_to_host(stream=stream)
                 _write_traj(traj, "a", positions)
             if not quiet:
                 sys.stdout.write(f"\r{np.round((t / gradient.shape[1]) * 100, 1)}%")
-                sys.stdout.flush()
+                sys.stdout.flush()            
 
     elif substrate.type == "ellipsoid":
 
@@ -1380,3 +1423,4 @@ def simulation(
         return signals, positions
     else:
         return signals
+
